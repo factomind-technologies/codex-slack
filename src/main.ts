@@ -98,6 +98,8 @@ async function main(): Promise<void> {
     await onboarding.joined(record(body).team_id, event, directory.botUserId ?? context.botUserId ?? '');
   });
   app.event('message', async ({ body, event }) => {
+    const text = record(event).text;
+    if (!directory.botUserId || typeof text !== 'string' || !text.includes(`<@${directory.botUserId}>`)) return;
     const team = record(body).team_id;
     if (!await onboarding.message(team, event)) bridge.ingest(team, github?.contextualize(event) ?? event);
   });
