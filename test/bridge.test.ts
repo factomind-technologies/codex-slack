@@ -405,3 +405,28 @@ test('!thread refuses cross-project, occupied, and already-connected conversatio
   await until(() => outputs.some(output => output.includes('Start a new top-level message')));
   assert.equal(store.get('T123:C123:20.2')?.thread, available);
 });
+
+
+test('async assistant questions deliver buttons and authorized clicks resume the same session', async t => {
+  const rpc = new Rpc(process.execPath, [fake]);
+  const agent = new Codex(rpc);
+  const store = new Store(':memory:');
+  const outputs = [];
+  const bridge = new Bridge(config, store, agent, async (binding, message) => outputs.push(message));
+  t.after(async () => { await bridge.stop(); store.close(); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'first' });
+  await until(() => outputs.some(o => o.text === 'Reply: first'));
+  const threadId = store.get('T123:C123:1.1').thread;
+  agent.emit('notification', 'item/completed', { threadId, turnId: 'ask-turn', item: {
+    id: 'async-question', type: 'agentMessage', text: 'Choose a drink.', questions: [{ title: 'Drink?', options: ['Coffee', 'Tea'] }],
+  } });
+  await until(() => outputs.some(o => o.text === 'Codex has a question.'));
+  assert.ok(outputs.some(o => o.text === 'Choose a drink.'));
+  const buttons = outputs.find(o => o.text === 'Codex has a question.').blocks.find(b => b.type === 'actions').elements;
+  const button = buttons[0];
+  agent.emit('notification', 'turn/completed', { threadId, turn: { id: 'ask-turn', status: 'completed' } });
+  assert.throws(() => bridge.interactions.choose(button.value, button.action_id.slice(3), 'Uother'), /unauthorized/);
+  bridge.interactions.choose(button.value, button.action_id.slice(3), 'U123');
+  await until(() => outputs.some(o => o.text === 'Reply: Drink?\nCoffee'));
+  assert.equal(store.get('T123:C123:1.1').thread, threadId);
+});

@@ -117,3 +117,67 @@ test('unsupported secret MCP forms report an unsupported request without inventi
   assert.equal(rpc.responses.length, 0);
   assert.match(rpc.rejections[0]!, /No user denial/);
 });
+
+
+test('single question choices are clickable and return labels without descriptions', t => {
+  const { store, rpc, ui } = setup(); t.after(() => store.close());
+  ui.receive({ id: 20, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', questions: [{ id: 'drink', question: 'Which drink?', options: [{ label: 'Coffee', description: 'Hot' }, { label: 'Tea' }] }] } });
+  const payload = JSON.parse(store.deliveries().at(-1)!.payload);
+  const button = payload.blocks.find(block => block.type === 'actions').elements[0];
+  assert.equal(button.text.text, 'Coffee');
+  assert.throws(() => ui.choose(button.value, 'option:9'), /Invalid/);
+  ui.choose(button.value, button.action_id.slice(3));
+  assert.deepEqual(rpc.responses[0]?.result, { answers: { drink: { answers: ['Coffee'] } } });
+  assert.throws(() => ui.choose(button.value, button.action_id.slice(3)), /expired/);
+});
+
+test('multiple questions have selectable options and optional custom text', t => {
+  const { store, rpc, ui } = setup(); t.after(() => store.close());
+  ui.receive({ id: 21, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', questions: [
+    { id: 'drink', question: 'Drink?', options: [{ label: 'Coffee' }, { label: 'Tea' }] },
+    { id: 'time', question: 'When?', options: [{ label: 'Now' }] },
+  ] } });
+  const key = token(store);
+  assert.ok(ui.modal(key).blocks.some(block => block.type === 'input' && block.element.type === 'static_select'));
+  assert.throws(() => ui.answer(key, { q0: { choice: { selected_option: { value: '99' } } } }), /Invalid|answer/);
+  ui.answer(key, { q0: { choice: { selected_option: { value: '1' } } }, q1: { answer: { value: 'Tomorrow' } } });
+  assert.deepEqual(rpc.responses[0]?.result, { answers: { drink: { answers: ['Tea'] }, time: { answers: ['Tomorrow'] } } });
+});
+
+test('async question buttons queue the actual user answer and survive turn completion', t => {
+  const { store, rpc } = setup(); t.after(() => store.close());
+  const replies = [];
+  const ui = new Interactions(rpc, store, (binding, text, user, id) => replies.push({ binding, text, user, id }));
+  const item = { id: 'async-1', text: '', questions: [{ title: 'Drink?', options: ['Coffee', 'Tea'] }] };
+  assert.equal(ui.receiveAsync('thread-1', item), true);
+  const payload = JSON.parse(store.deliveries().at(-1)!.payload);
+  const button = payload.blocks.find(block => block.type === 'actions').elements[0];
+  ui.clear('thread-1', 'turn-1');
+  ui.choose(button.value, button.action_id.slice(3), 'U123');
+  assert.equal(replies[0]?.user, 'U123');
+  assert.match(replies[0]?.text, /Drink\?\nCoffee/);
+  assert.equal(rpc.responses.length, 0);
+  assert.throws(() => ui.choose(button.value, button.action_id.slice(3), 'U123'), /expired/);
+});
+
+
+test('async questions deduplicate, support custom text, cancel, and expire on disconnect', t => {
+  const { store, rpc } = setup(); t.after(() => store.close());
+  const replies = [];
+  const ui = new Interactions(rpc, store, (_binding, text, user) => replies.push({ text, user }));
+  const item = { id: 'async-custom', questions: [{ title: 'Drink?', options: ['Tea'] }] };
+  ui.receiveAsync('thread-1', item);
+  const key = token(store);
+  const count = store.deliveries().length;
+  ui.receiveAsync('thread-1', item);
+  assert.equal(store.deliveries().length, count);
+  ui.answer(key, { text0: { answer: { value: 'Water' } } }, 'U123');
+  assert.deepEqual(replies[0], { text: 'Drink?\nWater', user: 'U123' });
+  ui.receiveAsync('thread-1', { ...item, id: 'async-cancel' });
+  ui.choose(token(store), 'cancel', 'U123');
+  assert.match(replies[1].text, /Cancel/);
+  ui.receiveAsync('thread-1', { ...item, id: 'async-expire' });
+  const expired = token(store);
+  ui.clear();
+  assert.throws(() => ui.choose(expired, 'option:0', 'U123'), /expired/);
+});

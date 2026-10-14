@@ -39,7 +39,11 @@ export class Bridge {
       throw new AttachmentError('Attachment downloads are not configured. Restart the updated bridge and resend.');
     }, private isolatedAgent?: Agent) {
     this.status = new ThreadStatus(setStatus);
-    this.interactions = new Interactions(agent, store);
+    this.interactions = new Interactions(agent, store, (binding, text, user, id) => {
+      if (!this.enabled(binding) || !authorized(this.config, binding.key.split(':')[0], user, binding.channel)) throw new Error('Question binding is disabled or user is unauthorized.');
+      this.store.ingest({ ...binding, id: id + ':answer', user, text, unsupported: false });
+      this.drain();
+    });
     agent.on('notification', (method: string, params: Record<string, unknown>) => {
       if (this.scheduledEvents) {
         this.event(String(params.threadId ?? ''), async () => {
@@ -309,7 +313,8 @@ export class Bridge {
     if (method === 'item/completed') {
       const item = record(params.item);
       if (item.type === 'agentMessage' && typeof item.text === 'string') {
-        this.say(binding.key, item.text, `${thread}:${String(params.turnId)}:${String(item.id)}`);
+        const hasQuestions = this.interactions.receiveAsync(thread, item);
+        if (!hasQuestions || item.text.trim()) this.say(binding.key, item.text, `${thread}:${String(params.turnId)}:${String(item.id)}`);
       }
     }
     if (method === 'turn/completed') {

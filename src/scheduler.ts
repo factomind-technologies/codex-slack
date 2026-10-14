@@ -445,6 +445,10 @@ export class Scheduler {
       const item = record(params.item);
       if (item.type === 'agentMessage' && typeof item.text === 'string') {
         if (item.phase !== 'commentary') this.db.update({ ...run, output: item.text });
+        if (Array.isArray(item.questions) && item.questions.length) {
+          await this.ensureRoot(run);
+          return false;
+        }
         if (quiet) return true;
       }
     }

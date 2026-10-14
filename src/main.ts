@@ -174,7 +174,7 @@ async function main(): Promise<void> {
       const choice = String(button.action_id).slice(3);
       if (choice === 'answer') {
         await client.views.open({ trigger_id: String(payload.trigger_id), view: bridge.interactions.modal(token) });
-      } else bridge.interactions.choose(token, choice);
+      } else bridge.interactions.choose(token, choice, String(user));
     } catch {
       await client.chat.postEphemeral({ channel: String(channel), user: String(user), text: `Could not submit this response. Check whether ${agent.name} is still waiting, then try again.` });
     }
@@ -182,14 +182,15 @@ async function main(): Promise<void> {
   });
   app.view('cs:answers', async ({ ack, body, view }) => {
     const pending = bridge.interactions.lookup(view.private_metadata);
+    const errorBlock = pending?.questions?.[0]?.options.length ? 'q0' : 'text0';
     if (!pending || !bridge.enabled(pending.binding) || !authorized(config, record(body.team).id, body.user.id, pending.binding.channel)) {
-      await ack({ response_action: 'errors', errors: { q0: 'This request has expired or you are not authorized.' } }); return;
+      await ack({ response_action: 'errors', errors: { [errorBlock]: 'This request has expired or you are not authorized.' } }); return;
     }
     try {
-      bridge.interactions.answer(view.private_metadata, view.state.values);
+      bridge.interactions.answer(view.private_metadata, view.state.values, body.user.id);
       await ack();
     } catch {
-      await ack({ response_action: 'errors', errors: { q0: 'Could not send answers. The request may have expired.' } });
+      await ack({ response_action: 'errors', errors: { [errorBlock]: 'Choose an option or enter an answer for every question. The request may have expired.' } });
     }
     await bridge.flush();
   });
