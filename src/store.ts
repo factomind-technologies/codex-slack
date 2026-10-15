@@ -104,19 +104,11 @@ export class Store {
   disabled(key: string): boolean {
     return !!this.db.prepare('SELECT 1 FROM disabled_sessions WHERE key=?').get(key);
   }
-  replaceDirectory(token: string, cwd: string, displaced: string[]): void {
+  bindDirectory(token: string, cwd: string): void {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const setup = this.setupByToken(token);
       if (!setup || setup.cwd) throw new Error('This channel is already bound.');
-      for (const channel of displaced) {
-        this.db.prepare('INSERT OR REPLACE INTO channel_overrides VALUES(?,?,NULL)').run(setup.team, channel);
-        this.db.prepare('UPDATE channel_setup SET cwd=NULL, token=?, prompted=1 WHERE team=? AND channel=?').run(randomUUID(), setup.team, channel);
-        const prefix = `${setup.team}:${channel}:`;
-        this.db.prepare('INSERT OR IGNORE INTO disabled_sessions SELECT key FROM bindings WHERE substr(key,1,?)=?').run(prefix.length, prefix);
-      }
-      this.db.prepare("UPDATE inbox SET status='failed' WHERE status='pending' AND key IN (SELECT key FROM disabled_sessions)").run();
-      this.db.prepare("UPDATE outbox SET status='failed' WHERE status='pending' AND key IN (SELECT key FROM disabled_sessions)").run();
       this.db.prepare('INSERT OR REPLACE INTO channel_overrides VALUES(?,?,?)').run(setup.team, setup.channel, cwd);
       this.saveChannelDirectory(token, cwd);
       this.db.exec('COMMIT');

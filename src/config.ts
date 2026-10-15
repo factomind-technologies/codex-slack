@@ -54,7 +54,6 @@ export function parseConfig(value: unknown): Config {
     const resolved = realpathSync(expandPath(cwd));
     if (!statSync(resolved).isDirectory()) throw new Error(`Channel ${id} cwd is not a directory`);
     allowedDirectory(root, resolved);
-    if (Object.values(channels).some(channel => channel.cwd === resolved)) throw new Error('Only one channel can bind each directory');
     channels[id] = { cwd: resolved };
   }
   if (raw.stateDir !== undefined && (typeof raw.stateDir !== 'string' || !raw.stateDir.trim())) throw new Error('Invalid stateDir');

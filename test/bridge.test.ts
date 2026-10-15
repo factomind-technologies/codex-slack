@@ -194,24 +194,32 @@ test('follow-ups steer an active turn and !stop interrupts it', async t => {
   await until(() => statuses.at(-1) === '');
 });
 
-test('directory transfer interrupts active work and old threads remain disabled after rebinding', async t => {
+test('channels sharing a directory run independent sessions without interrupting existing work', async t => {
   const local = { ...config, channels: { C123: { cwd: tmpdir() } } };
   const rpc = new Rpc(process.execPath, [fake]);
   const codex = new Codex(rpc); const store = new Store(':memory:'); const outputs: string[] = [];
   const bridge = new Bridge(local, store, codex, async (_, message) => { outputs.push(message.text); });
   t.after(async () => { await bridge.stop(); store.close(); });
-  const onboarding = new Onboarding(local, store, async () => {}, channels => { void bridge.disableChannels(channels); });
+  const onboarding = new Onboarding(local, store, async () => {});
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'hold' });
   await until(() => codex.active.size === 1);
   await onboarding.ask('T123', 'C999');
   const token = store.channelSetups('T123').find(row => row.channel === 'C999')!.token;
   const preview = onboarding.preview(token, 'T123', 'U123', tmpdir());
   onboarding.confirm(preview.private_metadata!, 'T123', 'U123');
-  await until(() => codex.active.size === 0);
-  assert.equal(bridge.enabled(store.get('T123:C123:1.1')!), false);
-  local.channels.C123 = { cwd: tmpdir() };
-  assert.equal(bridge.enabled(store.get('T123:C123:1.1')!), false);
-  assert.ok(!outputs.includes('Codex turn interrupted.'));
+  assert.equal(codex.active.size, 1);
+  assert.equal(bridge.enabled(store.get('T123:C123:1.1')!), true);
+  bridge.ingest('T123', { user: 'U123', channel: 'C999', ts: '2.1', text: 'hold' });
+  await until(() => codex.active.size === 2);
+  const first = store.get('T123:C123:1.1')!;
+  const second = store.get('T123:C999:2.1')!;
+  assert.notEqual(first.thread, second.thread);
+  assert.equal(first.cwd, second.cwd);
+  bridge.ingest('T123', { user: 'U123', channel: 'C999', ts: '2.2', thread_ts: '2.1', text: '!stop' });
+  await until(() => codex.active.size === 1);
+  assert.equal(codex.active.has(first.thread!), true);
+  assert.equal(bridge.enabled(first), true);
+  assert.equal(bridge.enabled(second), true);
 });
 
 test('non-operators, bots, edits, and other workspaces never enter the inbox', t => {

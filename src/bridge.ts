@@ -113,7 +113,6 @@ export class Bridge {
   wake(): void { this.drain(); }
   enabled(binding: Binding): boolean {
     if (this.store.disabled(binding.key) || binding.key.split(':')[0] !== this.config.teamId || !this.config.channels[binding.channel]) return false;
-    if (Object.entries(this.config.channels).some(([channel, value]) => channel !== binding.channel && value.cwd === binding.cwd)) return false;
     try { allowedDirectory(this.config.root, binding.cwd); }
     catch { return false; }
     return true;

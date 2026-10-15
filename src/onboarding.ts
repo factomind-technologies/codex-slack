@@ -6,17 +6,13 @@ import type { Message } from './messages.ts';
 import { Store, type ChannelSetup } from './store.ts';
 
 export class Onboarding {
-  private confirmations = new Map<string, { token: string; team: unknown; user: unknown; cwd: string; displaced: string[]; expires: number }>();
+  private confirmations = new Map<string, { token: string; team: unknown; user: unknown; cwd: string; expires: number }>();
   private readonly agentName: string;
   constructor(private config: Config, private store: Store,
-    private post: (channel: string, message: Message) => Promise<void>,
-    private displaced: (channels: string[]) => void = () => {}) {
+    private post: (channel: string, message: Message) => Promise<void>) {
     this.agentName = config.agent.driver === 'claude' ? 'Claude' : 'Codex';
     const overrides = store.overrides(config.teamId);
     for (const saved of overrides) delete config.channels[saved.channel];
-    for (const saved of overrides) if (saved.cwd) {
-      for (const [channel, binding] of Object.entries(config.channels)) if (binding.cwd === saved.cwd) delete config.channels[channel];
-    }
   }
 
   async ask(team: unknown, channel: unknown): Promise<void> {
@@ -26,10 +22,9 @@ export class Onboarding {
     const override = this.store.overrides(String(team)).find(row => row.channel === channel);
     const saved = override ? override.cwd : setup.cwd;
     if (saved) {
-      // Restore only for channels the bot has joined, using saved ownership decisions.
+      // Restore only for channels the bot has joined, using saved channel bindings.
       try {
         const cwd = this.directory(saved);
-        if (Object.values(this.config.channels).some(binding => binding.cwd === cwd)) throw new Error('Duplicate saved binding');
         this.config.channels[channel] = { cwd };
       }
       catch { console.error('A saved channel directory is unavailable; restore it before continuing.'); }
@@ -51,7 +46,7 @@ export class Onboarding {
     const channel = event.channel;
     if (event.bot_id || event.bot_profile || event.subtype || !operator(this.config, team, event.user)
       || typeof channel !== 'string' || !/^[CG][A-Z0-9]+$/.test(channel)) return false;
-    if (typeof event.text === 'string' && event.text.trim() === '!bind') {
+    if (typeof event.text === 'string' && event.text.replace(/<@[UW][A-Z0-9]+>/g, '').trim() === '!bind') {
       if (Object.hasOwn(this.config.channels, channel)) {
         await this.post(channel, { text: `This channel is already bound. Send a new top-level message to start a ${this.agentName} session.` });
         return true;
@@ -100,17 +95,14 @@ export class Onboarding {
   preview(token: string, team: unknown, user: unknown, folder: string): View {
     this.pending(token, team, user);
     const cwd = this.directory(folder.trim());
-    const displaced = this.conflicts(cwd);
     const id = randomUUID();
     for (const [key, value] of this.confirmations) if (value.expires < Date.now()) this.confirmations.delete(key);
-    this.confirmations.set(id, { token, team, user, cwd, displaced, expires: Date.now() + 600_000 });
+    this.confirmations.set(id, { token, team, user, cwd, expires: Date.now() + 600_000 });
     return { type: 'modal', callback_id: 'bind:confirm', private_metadata: id,
       title: { type: 'plain_text', text: 'Confirm binding' }, submit: { type: 'plain_text', text: 'Bind' },
       blocks: [
         { type: 'section', text: { type: 'plain_text', text: `Bind this channel to ${cwd}?` } },
-        { type: 'section', text: { type: 'mrkdwn', text: displaced.length
-          ? `This will unbind ${displaced.map(channel => `<#${channel}>`).join(', ')} and disable their existing threads and queued work. Active work will be interrupted (already-running tools may finish).`
-          : 'No other channel will be unbound. Nested project bindings are unchanged.' } },
+        { type: 'section', text: { type: 'plain_text', text: 'Other channels can share this directory. Sessions share files, so coordinate overlapping edits.' } },
         { type: 'input', block_id: 'directory', label: { type: 'plain_text', text: 'Confirm' }, element: {
           type: 'checkboxes', action_id: 'confirm', options: [{ text: { type: 'plain_text', text: 'Apply this binding' }, value: 'yes' }],
         } },
@@ -119,26 +111,15 @@ export class Onboarding {
   confirm(id: string, team: unknown, user: unknown): { channel: string; cwd: string } {
     const pending = this.confirmations.get(id);
     if (!pending || pending.team !== team || pending.user !== user || pending.expires < Date.now()) throw new Error('Confirmation expired. Close this dialog and use !bind again.');
-    const result = this.bind(pending.token, team, user, pending.cwd, pending.displaced);
+    const result = this.bind(pending.token, team, user, pending.cwd);
     this.confirmations.delete(id);
     return result;
   }
-  private conflicts(cwd: string): string[] {
-    return [...new Set([
-      ...Object.entries(this.config.channels).filter(([, binding]) => binding.cwd === cwd).map(([channel]) => channel),
-      ...this.store.channelSetups(this.config.teamId).filter(row => row.cwd === cwd).map(row => row.channel),
-      ...this.store.overrides(this.config.teamId).filter(row => row.cwd === cwd).map(row => row.channel),
-    ])].sort();
-  }
-  bind(token: string, team: unknown, user: unknown, folder: string, confirmed: string[] = []): { channel: string; cwd: string } {
+  bind(token: string, team: unknown, user: unknown, folder: string): { channel: string; cwd: string } {
     const setup = this.pending(token, team, user);
     const cwd = this.directory(folder.trim());
-    const displaced = this.conflicts(cwd);
-    if (JSON.stringify(displaced) !== JSON.stringify(confirmed)) throw new Error('Directory ownership changed. Close this dialog and use !bind to review the affected channels.');
-    this.store.replaceDirectory(token, cwd, displaced);
-    for (const channel of displaced) delete this.config.channels[channel];
+    this.store.bindDirectory(token, cwd);
     this.config.channels[setup.channel] = { cwd };
-    this.displaced(displaced);
     return { channel: setup.channel, cwd };
   }
   private directory(folder: string): string {

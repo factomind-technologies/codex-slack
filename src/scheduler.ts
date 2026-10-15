@@ -151,7 +151,7 @@ export class Scheduler {
   }
   private route(cwd: string): [string, { cwd: string }] | undefined {
     return Object.entries(this.bridge.config.channels).filter(([, binding]) => within(binding.cwd, cwd))
-      .sort((a, b) => b[1].cwd.length - a[1].cwd.length)[0];
+      .sort((a, b) => b[1].cwd.length - a[1].cwd.length || a[0].localeCompare(b[0]))[0];
   }
   put(value: unknown, contextThread?: string): Job {
     const raw = record(value);
@@ -173,8 +173,8 @@ export class Scheduler {
     else if (raw.channel === undefined || raw.channel === 'auto') channel = route?.[0] ?? null;
     else if (typeof raw.channel === 'string' && config.channels[raw.channel]) channel = raw.channel;
     else throw new Error('channel must be auto, null, or a configured Slack channel ID');
-    if (channel && (route?.[0] !== channel || !within(config.channels[channel]!.cwd, cwd))) {
-      throw new Error('Use the channel that owns this directory, or channel: null for local results');
+    if (channel && (config.channels[channel]!.cwd !== route?.[1].cwd || !within(config.channels[channel]!.cwd, cwd))) {
+      throw new Error('Use a channel bound to the closest directory, or channel: null for local results');
     }
     const timezone = required(raw, 'timezone', 100);
     new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
@@ -259,7 +259,7 @@ export class Scheduler {
     const config = this.bridge.config;
     if (job.team !== config.teamId || !config.allowedUserIds.includes(job.user)) throw new Error('The scheduling user or workspace is no longer authorized');
     if (allowedDirectory(config.root, job.cwd) !== job.cwd) throw new Error('The project directory changed');
-    if (job.channel && (config.channels[job.channel]?.cwd !== job.channelCwd || this.route(job.cwd)?.[0] !== job.channel)) {
+    if (job.channel && (config.channels[job.channel]?.cwd !== job.channelCwd || this.route(job.cwd)?.[1].cwd !== job.channelCwd)) {
       throw new Error('The project channel binding changed; update this schedule to select its destination again');
     }
     if (job.thread) {

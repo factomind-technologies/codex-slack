@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +25,12 @@ test('users-only configuration supports onboarding before any channel is bound',
 });
 
 test('only bot invitations in this workspace prompt, once per unbound channel', async () => {
-  const { config, store, posts, onboarding } = fixture();
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-slack-legacy-'));
+  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: dir, agent: { driver: 'codex', command: 'unused' }, scheduledBrowserUse: true };
+  const store = new Store(path.join(dir, 'bridge.sqlite'));
+  const legacy = new DatabaseSync(path.join(dir, 'bridge.sqlite'));
+  const posts: string[] = [];
+  const onboarding = new Onboarding(config, store, async channel => { posts.push(channel); });
   try {
     config.channels.C999 = { cwd: tmpdir() };
     await onboarding.joined('T123', { user: 'U123', channel: 'C123' }, 'UBOT');
@@ -116,59 +122,57 @@ test('root allows itself and children, rejecting traversal, sibling prefixes and
       assert.throws(() => allowedDirectory(root, folder), /configured root/);
       assert.throws(() => parseConfig({ ...config, channels: { C123: { cwd: folder } } }), /configured root/);
     }
-    assert.throws(() => parseConfig({ ...config, channels: { C123: { cwd: path.join(root, 'child') }, C999: { cwd: path.join(root, 'alias') } } }), /one channel/);
+    assert.deepEqual(parseConfig({ ...config, channels: { C123: { cwd: path.join(root, 'child') }, C999: { cwd: path.join(root, 'alias') } } }).channels, { C123: { cwd: path.join(root, 'child') }, C999: { cwd: path.join(root, 'child') } });
     const token = store.ensureChannelSetup('T123', 'C123').token;
     assert.throws(() => onboarding.preview(token, 'T123', 'U123', dir), /configured root/);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('confirmed transfer disables old sessions and queued work and persists the losing channel as unbound', async () => {
+test('shared bindings preserve other channels, queued work, and sessions across restart', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-slack-transfer-'));
   const child = path.join(dir, 'child'); mkdirSync(child);
   let store = new Store(path.join(dir, 'state.sqlite'));
   const config: Config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { COLD: { cwd: dir }, CCHILD: { cwd: child } }, stateDir: dir, agent: { driver: 'codex', command: 'unused' }, scheduledBrowserUse: true };
-  const disabled: string[][] = [];
   try {
-    const onboarding = new Onboarding(config, store, async () => {}, channels => { disabled.push(channels); });
+    const onboarding = new Onboarding(config, store, async () => {});
     const key = 'T123:COLD:1.1';
     store.ingest({ id: key, key, channel: 'COLD', root: '1.1', cwd: dir, thread: null, user: 'U123', text: 'pending', unsupported: false });
     store.enqueue(key, { text: 'pending reply' });
     await onboarding.ask('T123', 'CNEW');
     const token = store.channelSetups('T123').find(row => row.channel === 'CNEW')!.token;
     const view = onboarding.preview(token, 'T123', 'U123', dir);
-    assert.ok(JSON.stringify(view).includes('<#COLD>'));
+    assert.ok(JSON.stringify(view).includes('Other channels can share this directory.'));
     assert.equal(config.channels.COLD?.cwd, dir); // Preview is read-only.
     assert.throws(() => onboarding.confirm(view.private_metadata!, 'T123', 'U999'), /expired/);
-    assert.throws(() => onboarding.bind(token, 'T123', 'U123', dir), /ownership changed/);
     onboarding.confirm(view.private_metadata!, 'T123', 'U123');
-    assert.equal(config.channels.COLD, undefined);
+    assert.equal(config.channels.COLD?.cwd, dir);
     assert.equal(config.channels.CNEW?.cwd, dir);
     assert.equal(config.channels.CCHILD?.cwd, child);
-    assert.deepEqual(disabled, [['COLD']]);
-    assert.equal(store.disabled(key), true);
-    assert.equal(store.pending().length, 0);
-    assert.equal(store.deliveries().length, 0);
+    assert.equal(store.disabled(key), false);
+    assert.equal(store.pending().length, 1);
+    assert.equal(store.deliveries().length, 1);
     assert.throws(() => onboarding.confirm(view.private_metadata!, 'T123', 'U123'), /expired/);
     store.close(); store = new Store(path.join(dir, 'state.sqlite'));
-    config.channels = { COLD: { cwd: dir }, CCHILD: { cwd: child } };
+    store.bindDirectory(store.ensureChannelSetup('T123', 'COLD').token, dir);
+    config.channels = { CCHILD: { cwd: child } };
     const restored = new Onboarding(config, store, async () => {});
     await restored.ask('T123', 'COLD');
     await restored.ask('T123', 'CNEW');
-    assert.equal(config.channels.COLD, undefined);
+    assert.equal(config.channels.COLD?.cwd, dir);
     assert.equal(config.channels.CNEW?.cwd, dir);
-    assert.equal(store.disabled(key), true);
+    assert.equal(store.disabled(key), false);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('ownership changes between preview and confirmation require a fresh review', async () => {
+test('another channel may bind the directory between preview and confirmation', async () => {
   const { config, store, onboarding } = fixture();
   try {
     await onboarding.ask('T123', 'C123');
     const token = store.channelSetups('T123')[0]!.token;
     const view = onboarding.preview(token, 'T123', 'U123', tmpdir());
     config.channels.C999 = { cwd: realpathSync(tmpdir()) };
-    assert.throws(() => onboarding.confirm(view.private_metadata!, 'T123', 'U123'), /ownership changed/);
-    assert.equal(config.channels.C123, undefined);
+    onboarding.confirm(view.private_metadata!, 'T123', 'U123');
+    assert.equal(config.channels.C123?.cwd, realpathSync(tmpdir()));
     assert.ok(config.channels.C999);
   } finally { store.close(); }
 });
@@ -180,4 +184,28 @@ test('!bind as the first message prevents a second automatic welcome', async () 
     await onboarding.ask('T123', 'C123');
     assert.equal(posts.length, 1);
   } finally { store.close(); }
+});
+
+test('a mentioned !bind can recover a channel displaced by an older version', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-slack-legacy-'));
+  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: dir, agent: { driver: 'codex', command: 'unused' }, scheduledBrowserUse: true };
+  const store = new Store(path.join(dir, 'bridge.sqlite'));
+  const legacy = new DatabaseSync(path.join(dir, 'bridge.sqlite'));
+  const posts: string[] = [];
+  const onboarding = new Onboarding(config, store, async channel => { posts.push(channel); });
+  try {
+    config.channels.C999 = { cwd: realpathSync(tmpdir()) };
+    const setup = store.ensureChannelSetup('T123', 'C123');
+    store.claimSetupPrompt(setup.token);
+    // Legacy transfers left a null override and an already-claimed welcome prompt.
+    legacy.prepare('INSERT INTO channel_overrides VALUES(?,?,NULL)').run('T123', 'C123');
+    const key = 'T123:C123:1.1';
+    legacy.prepare('INSERT INTO disabled_sessions VALUES(?)').run(key);
+    assert.equal(await onboarding.message('T123', { user: 'U123', channel: 'C123', text: '<@UBOT> !bind' }), true);
+    assert.deepEqual(posts, ['C123']);
+    onboarding.bind(setup.token, 'T123', 'U123', tmpdir());
+    assert.equal(config.channels.C123?.cwd, realpathSync(tmpdir()));
+    assert.equal(config.channels.C999?.cwd, realpathSync(tmpdir()));
+    assert.equal(store.disabled(key), true);
+  } finally { legacy.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

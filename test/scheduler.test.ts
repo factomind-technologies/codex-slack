@@ -69,6 +69,21 @@ test('save pins closest project channel, validates inputs, and updates idempoten
   assert.equal(f.scheduler.put({ ...f.job, channel: null }).channel, null);
 });
 
+test('shared directories accept explicit schedule destinations and keep pinned channels', async t => {
+  const f = fixture(t);
+  const saved = f.scheduler.put({ ...f.job, channel: 'C123' });
+  f.bridge.config.channels.C000 = { cwd: f.dir };
+  assert.equal(f.scheduler.put({ ...f.job, id: 'auto' }).channel, 'C000');
+  assert.equal(f.scheduler.put({ ...f.job, id: 'explicit', channel: 'C123' }).channel, 'C123');
+  await f.scheduler.command({ action: 'pause', id: 'auto' });
+  await f.scheduler.command({ action: 'pause', id: 'explicit' });
+  f.setTime(saved.nextAt!);
+  await f.scheduler.tick();
+  await until(() => f.db.history().some(run => run.jobId === saved.id && run.status === 'completed'));
+  assert.equal(f.roots[0]?.channel, 'C123');
+  assert.equal(f.db.get(saved.id)?.enabled, true);
+});
+
 test('scheduled output lands in a new bound thread and Slack replies resume that session', async t => {
   const f = fixture(t);
   const job = f.scheduler.put(f.job);

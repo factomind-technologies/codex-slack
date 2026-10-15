@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
-  }, channels => { void bridge.disableChannels(channels); });
+  });
   const scheduleStore = new ScheduleStore(path.join(config.stateDir, 'schedules.sqlite'));
   const scheduler = new Scheduler(bridge, scheduleStore, async (channel, text) => {
     const result = await app.client.chat.postMessage({ channel, text,
