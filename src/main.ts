@@ -10,6 +10,7 @@ import { printDirectory, setup } from './setup.ts';
 import { Rpc } from './rpc.ts';
 import { Codex } from './codex.ts';
 import { Claude } from './claude.ts';
+import { parseStartupArgs, startupOverrides } from './cli.ts';
 import type { Agent } from './agent.ts';
 import { Store } from './store.ts';
 import { Bridge } from './bridge.ts';
@@ -23,18 +24,20 @@ import type { Server } from 'node:net';
 
 async function main(): Promise<void> {
   process.umask(0o077);
+  const args = parseStartupArgs(process.argv.slice(2));
   const token = botToken();
   const directory = await discover(new WebClient(token, { retryConfig: { retries: 0 }, timeout: 10_000 }));
-  if (process.argv.includes('--discover')) { printDirectory(directory); return; }
-  if (process.argv.includes('--setup')) { await setup(directory); return; }
+  if (args.discover) { printDirectory(directory); return; }
+  if (args.setup) { await setup(directory); return; }
   const config = loadResolvedConfig(directory);
+  const modelOverrides = startupOverrides(config.agent, args);
   const agent: Agent = config.agent.driver === 'claude'
     ? new Claude(config.agent.command)
-    : new Codex(new Rpc(config.agent.command));
+    : new Codex(new Rpc(config.agent.command), undefined, modelOverrides);
   const triageAgent = config.github?.codexHome
-    ? new Codex(new Rpc(config.agent.command, ['app-server'], 30_000, { ...process.env, CODEX_HOME: config.github.codexHome }))
+    ? new Codex(new Rpc(config.agent.command, ['app-server'], 30_000, { ...process.env, CODEX_HOME: config.github.codexHome }), undefined, modelOverrides)
     : undefined;
-  if (process.argv.includes('--check')) {
+  if (args.check) {
     try {
       await agent.check();
       await triageAgent?.check();

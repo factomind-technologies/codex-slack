@@ -1,7 +1,7 @@
 import type { LocalAttachment } from './attachments.ts';
 import { Agent, type AgentThread, type CodexPermissions } from './agent.ts';
 import { record } from './config.ts';
-import type { AgentOptions } from './config.ts';
+import type { AgentOptions, ModelOverrides } from './config.ts';
 import { Rpc } from './rpc.ts';
 
 export type CodexThread = AgentThread;
@@ -13,7 +13,7 @@ export class Codex extends Agent {
   private explicitPermissions = new Map<string, CodexPermissions>();
   private recycleTimer?: NodeJS.Timeout;
   readonly active = new Map<string, string>();
-  constructor(readonly rpc: Rpc, private idleRecycleMs = 60_000) {
+  constructor(readonly rpc: Rpc, private idleRecycleMs = 60_000, private modelOverrides: ModelOverrides = {}) {
     super();
     rpc.on('disconnect', () => {
       if (this.recycleTimer) clearTimeout(this.recycleTimer);
@@ -59,11 +59,17 @@ export class Codex extends Agent {
   }
   respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
   reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
+  private threadModelOverrides() {
+    const { model, modelReasoningEffort } = this.modelOverrides;
+    return { ...(model === undefined ? {} : { model }),
+      ...(modelReasoningEffort === undefined ? {} : { config: { model_reasoning_effort: modelReasoningEffort } }) };
+  }
   async create(cwd: string, options: AgentOptions = {}): Promise<string> {
     await this.rpc.start();
     // The scheduler supplies its global/per-job permissions explicitly.
     // Ordinary sessions inherit Codex settings.
     const result = record(await this.rpc.request('thread/start', { cwd,
+      ...this.threadModelOverrides(),
       ...(options.unattended ? { sandbox: options.sandbox ?? 'workspace-write', approvalPolicy: options.approvalPolicy ?? 'on-request' } : {}),
       ...options.codexPermissions,
     }));
@@ -97,7 +103,8 @@ export class Codex extends Agent {
     if (this.loaded.has(thread)) return;
     const { sandboxPolicy: _sandboxPolicy, ...overrides } = permissions;
     // Explicitly restore the pair: Codex resume can retain `never` while dropping full access.
-    const result = record(await this.rpc.request('thread/resume', { threadId: thread, ...overrides }));
+    const result = record(await this.rpc.request('thread/resume', { threadId: thread, ...overrides,
+      ...this.threadModelOverrides() }));
     const turns = record(result.thread).turns;
     if (Array.isArray(turns)) {
       const turn = turns.map(record).findLast(turn => turn.status === 'inProgress');
@@ -137,7 +144,9 @@ export class Codex extends Agent {
     if (turn) await this.rpc.request('turn/steer', { threadId: thread, expectedTurnId: turn, input });
     else {
       const { sandbox: _sandbox, ...overrides } = permissions;
-      await this.rpc.request('turn/start', { threadId: thread, input, ...overrides });
+      await this.rpc.request('turn/start', { threadId: thread, input, ...overrides,
+        ...(this.modelOverrides.model === undefined ? {} : { model: this.modelOverrides.model }),
+        ...(this.modelOverrides.modelReasoningEffort === undefined ? {} : { effort: this.modelOverrides.modelReasoningEffort }) });
     }
   }
   async interrupt(thread: string): Promise<boolean> {

@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 export type Channel = { cwd: string };
-export type AgentConfig = { driver: 'codex' | 'claude'; command: string };
+export type AgentConfig = { driver: 'codex' | 'claude'; command: string; model?: string; modelReasoningEffort?: string };
+export type ModelOverrides = Pick<AgentConfig, 'model' | 'modelReasoningEffort'>;
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type ApprovalPolicy = 'never' | 'on-request' | 'untrusted';
 export type AgentOptions = { unattended?: boolean; sandbox?: SandboxMode; approvalPolicy?: ApprovalPolicy; codexPermissions?: { sandbox?: SandboxMode; approvalPolicy?: ApprovalPolicy } };
@@ -62,6 +63,10 @@ export function parseConfig(value: unknown): Config {
   const driver = agentRaw.driver ?? 'codex';
   if (driver !== 'codex' && driver !== 'claude') throw new Error('agent.driver must be codex or claude');
   if (agentRaw.command !== undefined && (typeof agentRaw.command !== 'string' || !agentRaw.command.trim())) throw new Error('Invalid agent.command');
+  if (agentRaw.model !== undefined && (typeof agentRaw.model !== 'string' || !agentRaw.model.trim())) throw new Error('Invalid agent.model');
+  if (agentRaw.model !== undefined && driver !== 'codex') throw new Error('agent.model requires the Codex driver');
+  if (agentRaw.modelReasoningEffort !== undefined && (typeof agentRaw.modelReasoningEffort !== 'string' || !agentRaw.modelReasoningEffort.trim())) throw new Error('Invalid agent.modelReasoningEffort');
+  if (agentRaw.modelReasoningEffort !== undefined && driver !== 'codex') throw new Error('agent.modelReasoningEffort requires the Codex driver');
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
   if (raw.codexBin !== undefined && raw.agent !== undefined) throw new Error('Use agent.command instead of codexBin when agent is configured');
   if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
@@ -113,7 +118,9 @@ export function parseConfig(value: unknown): Config {
   return {
     root, teamId: raw.teamId, allowedUserIds: raw.allowedUserIds as string[], channels,
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
-    agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver) },
+    agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver),
+      ...(agentRaw.model === undefined ? {} : { model: (agentRaw.model as string).trim() }),
+      ...(agentRaw.modelReasoningEffort === undefined ? {} : { modelReasoningEffort: (agentRaw.modelReasoningEffort as string).trim() }) },
     scheduledBrowserUse: raw.scheduledBrowserUse as boolean ?? true,
     scheduledSandbox: raw.scheduledSandbox as SandboxMode ?? 'workspace-write',
     scheduledApprovalPolicy: raw.scheduledApprovalPolicy as ApprovalPolicy ?? 'on-request',

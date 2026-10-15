@@ -81,6 +81,35 @@ Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`. `scheduled
 
 Set `command` to an absolute executable path when the service cannot find the CLI. Arguments and shell commands are not accepted. The older `codexBin` setting remains accepted when `agent` is omitted. `CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory.
 
+For the Codex driver, optionally set a model and/or reasoning effort in `config.json`:
+
+```json
+"agent": {
+  "driver": "codex",
+  "command": "codex",
+  "model": "YOUR_MODEL_ID",
+  "modelReasoningEffort": "high"
+}
+```
+
+Override either setting for one daemon run:
+
+```sh
+npm start -- --model YOUR_MODEL_ID --model-reasoning-effort high
+```
+
+Both flags also accept `--flag=value`. The overrides apply to new and resumed
+sessions, scheduled work, and automatic GitHub triage, including an isolated triage
+Codex home. An active turn keeps its current model and effort until the next turn
+starts. Each setting independently prefers the CLI flag, then its `agent` config
+field. If a setting is omitted from both, the bridge sends no override for it and
+retains the existing Codex configuration/session behavior.
+
+`modelReasoningEffort` maps to Codex's `model_reasoning_effort`; supported values
+depend on the selected model (for example, `low`, `medium`, `high`, or `xhigh`).
+Overrides require the Codex driver; empty values are rejected. Rebuild with
+`npm run build` after updating the source before using `npm start`.
+
 ### Agent drivers
 
 The Slack, persistence, scheduling, attachment, and recovery layers depend on the normalized interface in `src/agent.ts`, not on either CLI protocol. Drivers translate native lifecycle events into session/turn start, message, completion, interruption, and disconnect events, and advertise optional capabilities instead of making the bridge guess.
@@ -361,7 +390,7 @@ Only configured users in the configured workspace/channels can send instructions
 
 With the default driver, the daemon spawns `codex app-server` and communicates over stdio. After all turns have been idle for a minute, it recycles that process and its helper process group; the next input transparently resumes the saved session through a fresh app-server. This bounds resources left by completed tool calls. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
 
-Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request the configured `scheduledSandbox` and `scheduledApprovalPolicy`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Codex applies sandbox and approval settings together on resume and on every new turn. Human follow-ups read the current project/user Codex configuration rather than inheriting the preceding scheduled turn's permissions, including after idle recycling or daemon restart. Steering an active turn preserves that turn's permissions. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
+Model and reasoning effort inherit the selected agent's effective configuration unless explicitly overridden as described above. Instructions and memory settings are inherited from that configuration. Codex scheduled runs explicitly request the configured `scheduledSandbox` and `scheduledApprovalPolicy`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Codex applies sandbox and approval settings together on resume and on every new turn. Human follow-ups read the current project/user Codex configuration rather than inheriting the preceding scheduled turn's permissions, including after idle recycling or daemon restart. Steering an active turn preserves that turn's permissions. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
 Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provides a separate process lease so two daemons cannot use the same state directory. Run only one instance per Slack app token, even with different state directories. The state directory is private to your OS user and contains conversation text; it is not encrypted.
 
