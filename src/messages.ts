@@ -1,4 +1,4 @@
-import type { KnownBlock, RichTextElement } from '@slack/types';
+import type { KnownBlock } from '@slack/types';
 
 export type Message = { text: string; blocks?: KnownBlock[] };
 export const escapeSlack = (text: string): string => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -17,16 +17,7 @@ export function chunks(text: string, size = 2800): string[] {
 }
 
 export function textMessage(text: string): Message {
-  const elements: RichTextElement[] = [];
-  let offset = 0;
-  for (const match of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) {
-    if (match.index > offset) elements.push({ type: 'text', text: text.slice(offset, match.index) });
-    elements.push({ type: 'user', user_id: match[1]! });
-    offset = match.index + match[0].length;
-  }
-  if (elements.length) {
-    if (offset < text.length) elements.push({ type: 'text', text: text.slice(offset) });
-    return { text, blocks: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements }] }] };
-  }
-  return { text, blocks: [{ type: 'section', text: { type: 'plain_text', text } }] };
+  // Slack's native Markdown block accepts the standard Markdown produced by agents.
+  // Keep the original text as the notification and accessibility fallback.
+  return { text, blocks: [{ type: 'markdown', text }] };
 }
