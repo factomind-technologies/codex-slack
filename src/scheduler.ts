@@ -149,6 +149,14 @@ export class Scheduler {
       return false;
     }
   }
+  slackContext(thread: string): import('./slack-service.ts').SlackContext | undefined {
+    const run = this.db.byThread(thread);
+    const job = run && this.runJob(run);
+    if (!run || !job?.channel) return undefined;
+    this.valid(job);
+    const binding = run.key ? this.bridge.store.get(run.key) : undefined;
+    return { team: job.team, channel: job.channel, cwd: job.cwd, user: job.user, root: binding?.root ?? null };
+  }
   private route(cwd: string): [string, { cwd: string }] | undefined {
     return Object.entries(this.bridge.config.channels).filter(([, binding]) => within(binding.cwd, cwd))
       .sort((a, b) => b[1].cwd.length - a[1].cwd.length || a[0].localeCompare(b[0]))[0];
@@ -403,7 +411,7 @@ export class Scheduler {
       if (this.stopped) throw new Error('Scheduler stopped before task dispatch');
       const prompt = this.taskPrompt(job);
       const instruction = `${prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
-      await this.bridge.agent.input(run.thread, job.cwd, instruction, [], permissions);
+      await this.bridge.agent.input(run.thread, job.cwd, instruction + (job.channel && this.bridge.interfaceHint ? `\n\n${this.bridge.interfaceHint(run.thread)}` : ''), [], permissions);
       // Completion may arrive before the turn/start acknowledgement; never overwrite it here.
     } catch (error) {
       const saved = this.db.run(run.id)!;

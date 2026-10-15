@@ -14,6 +14,7 @@ export class ThreadCommandError extends Error {}
 
 export class Bridge {
   readonly interactions: Interactions;
+  interfaceHint?: (session: string) => string;
   scheduledEvents?: {
     notification(method: string, params: Record<string, unknown>): Promise<boolean>;
     request(request: ServerRequest): Promise<boolean>;
@@ -211,7 +212,9 @@ export class Bridge {
           }
         }
         if (!this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
-        await agent.input(binding.thread, binding.cwd, message.text, files);
+        const hint = !message.agentDispatch?.transient ? this.interfaceHint?.(binding.thread) : undefined;
+        const prompt = hint ? `${message.text.trim() ? message.text : 'Please inspect the attached files.'}\n\n${hint}` : message.text;
+        await agent.input(binding.thread, binding.cwd, prompt, files);
       }
       this.store.mark(message.id, 'done');
     } catch (error) {

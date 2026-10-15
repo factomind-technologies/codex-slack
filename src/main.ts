@@ -18,6 +18,8 @@ import { Onboarding } from './onboarding.ts';
 import { ScheduleStore } from './schedule-store.ts';
 import { Scheduler } from './scheduler.ts';
 import { listenControl } from './control.ts';
+import { SlackService } from './slack-service.ts';
+import { fileURLToPath } from 'node:url';
 import { recoverRestart } from './restart.ts';
 import { GithubFeed, GithubStore } from './github.ts';
 import type { Server } from 'node:net';
@@ -86,6 +88,23 @@ async function main(): Promise<void> {
     if (!result.ts) throw new Error('Slack returned no message timestamp');
     return result.ts;
   });
+  const slackService = new SlackService(bridge, {
+    postMessage: args => app.client.chat.postMessage(args),
+    getUploadURL: args => app.client.files.getUploadURLExternal(args),
+    completeUpload: args => app.client.files.completeUploadExternal(args),
+    replies: args => app.client.conversations.replies(args),
+  }, session => scheduler.slackContext(session));
+  const messageCli = fileURLToPath(new URL('../bin/codex-slack-message.mjs', import.meta.url));
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  bridge.interfaceHint = session => `[Slack bridge interface]
+You are already connected to Slack through this bridge. Ordinary responses are threaded.
+For user-requested top-level messages, Markdown attachments, or omitted thread history,
+use the daemon-owned command (no separate Slack plugin or bot token is needed):
+node ${quote(messageCli)} --session ${quote(session)} --state-dir ${quote(config.stateDir)} --help
+Run context first. Use post-message or upload-file with --file JSON and destination channel
+only when the user requested publication. Use a stable operation id; inspect uncertain
+outcomes with operation before any new send. Upload roots are reported by context.
+Thread-replies returns bounded pages and reports actual Slack API permission limitations.`;
   const githubStore = config.github ? new GithubStore(path.join(config.stateDir, 'github.sqlite')) : undefined;
   const github = config.github && githubStore ? new GithubFeed(config.github, githubStore, bridge,
     async message => {
@@ -222,7 +241,7 @@ async function main(): Promise<void> {
       await onboarding.ask(config.teamId, channel.id);
     }
     await app.start();
-    control = await listenControl(path.join(config.stateDir, 'control.sock'), value => scheduler.command(value));
+    control = await listenControl(path.join(config.stateDir, 'control.sock'), value => record(value).scope === 'slack' ? slackService.command(value) : scheduler.command(value));
     recoverRestart(bridge);
     bridge.start();
     scheduler.start();

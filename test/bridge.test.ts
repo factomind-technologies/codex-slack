@@ -296,6 +296,24 @@ test('attachment-only messages, captions and active-turn steering preserve every
   assert.equal(downloads, 2);
 });
 
+test('Slack interface hints carry the exact session and preserve attachment-only instructions', async t => {
+  const rpc = new Rpc(process.execPath, [fake]); const store = new Store(':memory:');
+  const outputs: string[] = [];
+  const bridge = new Bridge(config, store, new Codex(rpc), async (_, message) => { outputs.push(message.text); }, undefined,
+    async () => [{ name: 'report.md', path: '/tmp/report.md', image: false }]);
+  bridge.interfaceHint = session => `Slack CLI --session ${session}`;
+  t.after(async () => { await bridge.stop(); store.close(); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', files: [{ id: 'F123' }] });
+  await until(() => outputs.some(text => text.startsWith('Reply:')));
+  const thread = store.get('T123:C123:1.1')!.thread!;
+  const data = record(record(await rpc.request('thread/read', { threadId: thread })).thread);
+  const turn = record((data.turns as unknown[])[0]);
+  const text = String(record((turn.input as unknown[])[0]).text);
+  assert.match(text, /^Please inspect the attached files\./);
+  assert.ok(text.includes(`Slack CLI --session ${thread}`));
+  assert.ok(text.includes('/tmp/report.md'));
+});
+
 test('failed attachment retrieval never sends the caption or starts a session', async t => {
   const rpc = new Rpc('unused'); const store = new Store(':memory:'); const outputs: string[] = [];
   const bridge = new Bridge(config, store, new Codex(rpc), async (_, message) => { outputs.push(message.text); }, undefined,

@@ -33,7 +33,7 @@ cp .env.example .env
 4. Run **`npm run setup`**. It discovers your workspace, lets you choose yourself, and writes `config.json`. Channel selection is optional: skip it to choose directories in Slack instead. All folders must already exist. No Slack IDs to find or copy.
 5. Run `npm run doctor` to check Slack access, channel membership, folders, and the selected agent's login without starting a model turn. Then `npm start`.
 
-Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant the scopes listed below, including `files:read` for attachments and `channels:join` for joining public channels. The read scopes let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
+Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant the scopes listed below, including `files:read` for downloads, `files:write` for report uploads, and `channels:join` for joining public channels. The read scopes let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
 
 ### Slack app manifest — paste into Slack
 
@@ -43,7 +43,7 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
   "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
-  "oauth_config": { "scopes": { "bot": ["files:read", "channels:history", "channels:join", "channels:read", "chat:write", "groups:history", "groups:read", "users:read"] } },
+  "oauth_config": { "scopes": { "bot": ["files:read", "files:write", "channels:history", "channels:join", "channels:read", "chat:write", "groups:history", "groups:read", "users:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups", "member_joined_channel"] },
     "interactivity": { "is_enabled": true },
@@ -147,6 +147,82 @@ Upload files with a message or send files alone, in either a new conversation or
 Existing installations need the **files:read** bot scope: apply the updated `slack-manifest.json` in Slack → App Manifest, reinstall under OAuth & Permissions, and restart the built daemon. Missing access is reported without sending a partial prompt. Messages rejected by an older bridge must be resent.
 
 Downloads are private (0600 files in per-message 0700 directories) under `stateDir/attachments`. They remain available for session follow-ups and restarts. They are not automatically pruned; archive or remove them only when their sessions no longer need them. The bot token is used only to retrieve files from Slack and is never passed to Codex.
+
+## Agent Slack interface
+
+The agent can post a top-level message, attach a Markdown report, or retrieve omitted
+thread context through the existing bridge. No separate Slack plugin or token in the
+agent environment is required. Each Slack-delivered prompt includes the absolute path
+to the CLI and its exact session ID. Ordinary assistant replies remain threaded.
+
+After building, use `node bin/codex-slack-message.mjs --help` (absolute path when outside
+this checkout). Commands default to `CODEX_THREAD_ID`; use `--session <session-id>` to
+select the originating Slack session explicitly. Never infer the channel from cwd:
+several channels may share it. `--state-dir` or `CODEX_SLACK_STATE_DIR` selects the
+private daemon control socket when the state directory is customized.
+
+```sh
+node bin/codex-slack-message.mjs context
+node bin/codex-slack-message.mjs post-message --file /tmp/slack-message.json
+node bin/codex-slack-message.mjs upload-file --file /tmp/slack-report.json
+node bin/codex-slack-message.mjs operation daily-summary-2026-10-14
+node bin/codex-slack-message.mjs thread-replies
+```
+
+Write request JSON using a file or `--file -` for stdin; do not interpolate report
+prose into shell commands. A message request looks like:
+
+```json
+{"id":"daily-summary-2026-10-14","destination":"channel","text":"Concise validated summary..."}
+```
+
+`destination: "channel"` omits `thread_ts` and publishes directly to the session's
+bound channel. `destination: "thread"` uses its bound thread root. Destinations
+outside that exact bound channel are rejected. Quiet scheduled sessions can publish
+to their pinned channel before a Slack root exists; thread delivery requires a root.
+Only an authorized, enabled session can use the interface; restricted automatic
+GitHub triage sessions cannot use it. The interface does not grant publication
+permission: agents must follow the user's delivery instructions.
+
+An attachment request looks like:
+
+```json
+{"id":"daily-report-2026-10-14","destination":"channel","path":"/absolute/reports/2026-10-14.md"}
+```
+
+Uploads attach the actual file and never paste its contents into a message or
+`initial_comment`. Configure explicit readable output directories in `config.json`:
+
+```json
+{"slackUploadRoots":["/absolute/reports"]}
+```
+
+No upload roots are enabled by default. The roots can be outside the session cwd.
+Only nonempty regular `.md` files up to 25 MiB are accepted; symlink escapes outside
+the configured roots are rejected. Restart after changing daemon configuration.
+Uploads also require **files:write** on the live bot token. Apply the manifest and
+reauthorize/reinstall the Slack app to grant it; editing the manifest alone does not
+change granted scopes. Existing message posting already uses `chat:write`.
+
+Sends and uploads require a stable operation `id`. The bridge journals intent before
+contacting Slack and returns the actual message timestamp or file ID on success.
+Repeating the same ID and arguments returns the recorded result without sending
+again, including across restarts. Reusing an ID with different arguments is rejected.
+`operation <id>` inspects the outcome within the same session. Failed or uncertain
+operations exit nonzero; inspect `status`, `stage`, `fileId`, `uploaded`, and `shared`
+before considering a new operation. A timeout or crash never triggers an automatic
+retry. A partial upload can have a file ID and uploaded bytes without a confirmed
+channel share. Upload responses include the SHA-256 of the bytes actually read.
+Summary and attachment use separate IDs, so one can succeed while the other fails.
+
+`thread-replies` returns one bounded page from the current channel, defaulting to
+the original thread. To retrieve a different known thread or the next page, supply
+JSON such as `{"root":"123.456","limit":15,"cursor":"next-cursor"}` with `--file`.
+The response contains `messages`, `hasMore`, and `nextCursor`; repeat with that cursor
+to paginate. Slack token-type, scope, and rate-limit errors are reported explicitly,
+not as empty history. The interface returns message text and identifiers, excluding
+private file download URLs. It cannot promise access beyond the installed token's
+actual permissions.
 
 ## GitHub maintainer feed
 

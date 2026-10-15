@@ -51,6 +51,10 @@ export class Store {
         invocation TEXT NOT NULL, requested INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending', detail TEXT
       );
+      CREATE TABLE IF NOT EXISTS slack_operations (
+        session TEXT NOT NULL, id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        document TEXT NOT NULL, PRIMARY KEY(session,id)
+      );
       CREATE UNIQUE INDEX IF NOT EXISTS one_pending_restart ON restarts(status) WHERE status='pending';
     `);
     if (!this.db.prepare('PRAGMA table_info(inbox)').all().some(column => column.name === 'files')) {
@@ -61,6 +65,15 @@ export class Store {
     }
   }
   close(): void { this.db.close(); }
+  slackOperation(session: string, id: string): { fingerprint: string; document: string } | undefined {
+    return this.db.prepare('SELECT fingerprint,document FROM slack_operations WHERE session=? AND id=?').get(session, id) as { fingerprint: string; document: string } | undefined;
+  }
+  claimSlackOperation(session: string, id: string, fingerprint: string, document: string): boolean {
+    return this.db.prepare('INSERT OR IGNORE INTO slack_operations VALUES(?,?,?,?)').run(session, id, fingerprint, document).changes > 0;
+  }
+  saveSlackOperation(session: string, id: string, document: string): void {
+    this.db.prepare('UPDATE slack_operations SET document=? WHERE session=? AND id=?').run(document, session, id);
+  }
   pendingRestart(): Restart | undefined {
     return this.db.prepare("SELECT * FROM restarts WHERE status='pending'").get() as Restart | undefined;
   }

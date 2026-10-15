@@ -24,7 +24,7 @@ export async function listenControl(filename: string, command: (value: unknown) 
           const result = await command(JSON.parse(buffer.slice(0, end)));
           socket.end(JSON.stringify({ ok: true, result }) + '\n');
         } catch (error) {
-          socket.end(JSON.stringify({ ok: false, error: error instanceof Error && !('data' in error) ? error.message : 'Scheduling command failed' }) + '\n');
+          socket.end(JSON.stringify({ ok: false, error: error instanceof Error && !('data' in error) ? error.message : 'Bridge control command failed' }) + '\n');
         }
       })();
     });
@@ -34,7 +34,7 @@ export async function listenControl(filename: string, command: (value: unknown) 
     server.listen(filename, () => { server.off('error', reject); resolve(); });
   });
   chmodSync(filename, 0o600);
-  server.on('error', () => console.error('Scheduler control socket failed'));
+  server.on('error', () => console.error('Bridge control socket failed'));
   return server;
 }
 
@@ -43,22 +43,22 @@ export async function controlRequest(filename: string, value: unknown): Promise<
     const socket = createConnection(filename);
     let buffer = ''; let answered = false;
     socket.setEncoding('utf8');
-    socket.setTimeout(60_000, () => socket.destroy(new Error('Scheduler response timed out. Inspect list/history before retrying a mutation.')));
+    socket.setTimeout(60_000, () => socket.destroy(new Error('Bridge response timed out. Inspect operation status or scheduling history before retrying a mutation.')));
     socket.on('connect', () => socket.write(JSON.stringify(value) + '\n'));
     socket.on('error', reject);
     socket.on('data', chunk => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { socket.destroy(new Error('Scheduler response too large')); return; }
+      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { socket.destroy(new Error('Bridge response too large')); return; }
       const end = buffer.indexOf('\n');
       if (end < 0 || answered) return;
       answered = true;
       try {
         const result = record(JSON.parse(buffer.slice(0, end)));
-        if (result.ok !== true) reject(new Error(String(result.error ?? 'Scheduling command failed')));
+        if (result.ok !== true) reject(new Error(String(result.error ?? 'Bridge control command failed')));
         else resolve(result.result);
       } catch (error) { reject(error); }
       socket.end();
     });
-    socket.on('close', () => { if (!answered) reject(new Error('Scheduler disconnected. Inspect list/history before retrying a mutation.')); });
+    socket.on('close', () => { if (!answered) reject(new Error('Bridge disconnected. Inspect operation status or scheduling history before retrying a mutation.')); });
   });
 }

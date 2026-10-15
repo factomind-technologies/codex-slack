@@ -16,6 +16,7 @@ import { record } from '../src/config.ts';
 import type { Message } from '../src/messages.ts';
 import type { TestContext } from 'node:test';
 import { checkCondition, type CheckCondition } from '../src/condition.ts';
+import { SlackService } from '../src/slack-service.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
 async function until(predicate: () => boolean): Promise<void> {
@@ -82,6 +83,30 @@ test('shared directories accept explicit schedule destinations and keep pinned c
   await until(() => f.db.history().some(run => run.jobId === saved.id && run.status === 'completed'));
   assert.equal(f.roots[0]?.channel, 'C123');
   assert.equal(f.db.get(saved.id)?.enabled, true);
+});
+
+test('quiet scheduled sessions can publish to their pinned channel before a thread exists', async t => {
+  const f = fixture(t);
+  f.bridge.interfaceHint = session => `Use the Slack CLI with --session ${session}`;
+  const job = f.scheduler.put({ ...f.job, prompt: 'hold' });
+  const run = await f.scheduler.launch(job);
+  await until(() => f.codex.active.has(run.thread!));
+  assert.equal(f.roots.length, 0);
+  const posted: unknown[] = [];
+  const service = new SlackService(f.bridge, {
+    postMessage: async args => { posted.push(args); return { ts: '9.9' }; },
+    getUploadURL: async () => { throw new Error('unused'); },
+    completeUpload: async () => { throw new Error('unused'); },
+    replies: async () => ({ messages: [] }),
+  }, session => f.scheduler.slackContext(session));
+  const context = record(await service.command({ action: 'context', session: run.thread }));
+  assert.equal(context.channel, 'C123'); assert.equal(context.root, null);
+  const result = record(await service.command({ action: 'post-message', session: run.thread, id: 'scheduled-summary', destination: 'channel', text: 'Validated summary' }));
+  assert.equal(result.status, 'completed'); assert.equal(result.ts, '9.9');
+  assert.equal(Object.hasOwn(record(posted[0]), 'thread_ts'), false);
+  await assert.rejects(service.command({ action: 'post-message', session: run.thread, id: 'no-root', destination: 'thread', text: 'hello' }), /thread timestamp/);
+  const data = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.match(JSON.stringify(data.turns), /Use the Slack CLI with --session/);
 });
 
 test('scheduled output lands in a new bound thread and Slack replies resume that session', async t => {

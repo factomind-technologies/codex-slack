@@ -23,6 +23,7 @@ export type Config = {
   stateDir: string;
   agent: AgentConfig;
   scheduledBrowserUse: boolean;
+  slackUploadRoots?: string[];
   scheduledSandbox?: SandboxMode;
   scheduledApprovalPolicy?: ApprovalPolicy;
   github?: GithubConfig;
@@ -55,6 +56,15 @@ export function parseConfig(value: unknown): Config {
     if (!statSync(resolved).isDirectory()) throw new Error(`Channel ${id} cwd is not a directory`);
     allowedDirectory(root, resolved);
     channels[id] = { cwd: resolved };
+  }
+  let slackUploadRoots: string[] | undefined;
+  if (raw.slackUploadRoots !== undefined) {
+    if (!Array.isArray(raw.slackUploadRoots) || raw.slackUploadRoots.some(root => typeof root !== 'string' || !root.trim())) throw new Error('slackUploadRoots must be an array of existing directories');
+    slackUploadRoots = raw.slackUploadRoots.map((root: string) => {
+      const resolved = realpathSync(expandPath(root));
+      if (!statSync(resolved).isDirectory()) throw new Error('slackUploadRoots must contain directories');
+      return resolved;
+    });
   }
   if (raw.stateDir !== undefined && (typeof raw.stateDir !== 'string' || !raw.stateDir.trim())) throw new Error('Invalid stateDir');
   if (raw.agent !== undefined && (typeof raw.agent !== 'object' || raw.agent === null || Array.isArray(raw.agent))) throw new Error('Invalid agent');
@@ -121,6 +131,7 @@ export function parseConfig(value: unknown): Config {
       ...(agentRaw.model === undefined ? {} : { model: (agentRaw.model as string).trim() }),
       ...(agentRaw.modelReasoningEffort === undefined ? {} : { modelReasoningEffort: (agentRaw.modelReasoningEffort as string).trim() }) },
     scheduledBrowserUse: raw.scheduledBrowserUse as boolean ?? true,
+    ...(slackUploadRoots ? { slackUploadRoots } : {}),
     scheduledSandbox: raw.scheduledSandbox as SandboxMode ?? 'workspace-write',
     scheduledApprovalPolicy: raw.scheduledApprovalPolicy as ApprovalPolicy ?? 'on-request',
     ...(github ? { github } : {}),
