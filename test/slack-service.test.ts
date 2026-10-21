@@ -173,3 +173,25 @@ test('configured upload roots validate directories without restricting reports t
   assert.throws(() => parseConfig({ ...f.config, slackUploadRoots: f.reports }), /array/);
   assert.throws(() => parseConfig({ ...f.config, slackUploadRoots: [f.report] }), /directories/);
 });
+
+
+test('scheduled uploads and operation inspection use the pinned publication or audit destination', async t => {
+  const f = fixture(t);
+  const service = new SlackService(f.bridge, f.client, () => ({
+    team: 'T123', channel: 'C123', auditChannel: 'C999', root: '1.1', cwd: f.cwd, user: 'U123',
+  }), f.upload);
+  const command = (args: object) => service.command({ session: 'session-two', ...args });
+  const report = { action: 'upload-file', id: 'report-split', destination: 'channel', path: f.report };
+  const publication = await command(report);
+  assert.equal(record(publication).channel, 'C123');
+  assert.deepEqual(f.calls[2]?.args, { files: [{ id: 'F123', title: 'day.md' }], channel_id: 'C123' });
+  const audit = { ...report, id: 'audit-split', destination: 'thread' };
+  const thread = await command(audit);
+  assert.equal(record(thread).channel, 'C999');
+  assert.deepEqual(f.calls[5]?.args, { files: [{ id: 'F123', title: 'day.md' }], channel_id: 'C999', thread_ts: '1.1' });
+  assert.deepEqual(await command({ action: 'operation', id: report.id }), publication);
+  assert.deepEqual(await command({ action: 'operation', id: audit.id }), thread);
+  assert.deepEqual(await command(audit), thread); assert.equal(f.calls.length, 6);
+  delete f.config.channels.C999;
+  await assert.rejects(command({ action: 'context' }), /binding is disabled/);
+});

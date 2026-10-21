@@ -7,7 +7,7 @@ import type { Bridge } from './bridge.ts';
 import { textMessage, type Message } from './messages.ts';
 import type { FilesCompleteUploadExternalArguments } from '@slack/web-api';
 
-export type SlackContext = { team: string; channel: string; root: string | null; cwd: string; user: string };
+export type SlackContext = { team: string; channel: string; root: string | null; cwd: string; user: string; auditChannel?: string };
 export type SlackClient = {
   postMessage(args: Message & { channel: string; thread_ts?: string; unfurl_links: false; unfurl_media: false; parse: 'none' }): Promise<{ channel?: string; ts?: string }>;
   getUploadURL(args: { filename: string; length: number }): Promise<{ file_id?: string; upload_url?: string }>;
@@ -63,10 +63,14 @@ export class SlackService {
     if (binding && binding.thread !== session) throw new InputError('Restricted automatic sessions cannot use the Slack publication interface');
     if (binding && !this.bridge.enabled(binding)) throw new InputError('Slack session binding is disabled');
     const user = binding && store.owner(binding.key);
-    const context = binding && user
-      ? { team: binding.key.split(':')[0]!, channel: binding.channel, root: binding.root, cwd: binding.cwd, user }
-      : this.scheduledContext(session);
+    const scheduled = this.scheduledContext(session);
+    const context = scheduled
+      ? { ...scheduled, user: user ?? scheduled.user }
+      : binding && user
+        ? { team: binding.key.split(':')[0]!, channel: binding.channel, root: binding.root, cwd: binding.cwd, user }
+        : undefined;
     if (!context || !authorized(config, context.team, context.user, context.channel)) throw new InputError('No authorized Slack binding for this session');
+    if (context.auditChannel && !authorized(config, context.team, context.user, context.auditChannel)) throw new InputError('No authorized Slack audit binding for this session');
     try { allowedDirectory(config.root, context.cwd); }
     catch { throw new InputError('Slack session directory is unavailable or outside the configured root'); }
     return context;
@@ -86,10 +90,12 @@ export class SlackService {
       capabilities: ['post-message', 'upload-file', 'thread-replies', 'operation'],
       uploadRoots: this.bridge.config.slackUploadRoots ?? [], uploadTypes: ['.md'], maxUploadBytes: 25 * 1024 * 1024,
       note: 'Slack API scopes and token type may limit uploads or history; API errors are reported explicitly.' };
-    if (raw.channel !== undefined && raw.channel !== context.channel) throw new InputError('Destination must be the session’s bound channel');
+    const threadChannel = context.auditChannel ?? context.channel;
+    const channel = raw.destination === 'thread' || raw.action === 'thread-replies' ? threadChannel : context.channel;
+    if (raw.channel !== undefined && raw.channel !== channel) throw new InputError('Destination must be the session’s bound channel for this action');
     if (raw.action === 'operation') {
       const operation = this.inspect(session, required(raw, 'id'));
-      if (operation.channel !== context.channel) throw new InputError('Operation destination no longer matches this binding');
+      if (operation.channel !== (operation.threadTs ? threadChannel : context.channel)) throw new InputError('Operation destination no longer matches this binding');
       return operation;
     }
     if (raw.action === 'thread-replies') {
@@ -98,8 +104,8 @@ export class SlackService {
       if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100) throw new InputError('limit must be 1–100');
       const cursor = raw.cursor === undefined ? undefined : required(raw, 'cursor', 2000);
       try {
-        const result = await this.client.replies({ channel: context.channel, ts, limit: Number(limit), ...(cursor ? { cursor } : {}) });
-        return { channel: context.channel, root: ts, messages: (result.messages ?? []).slice(0, Number(limit)).map(value => {
+        const result = await this.client.replies({ channel, ts, limit: Number(limit), ...(cursor ? { cursor } : {}) });
+        return { channel, root: ts, messages: (result.messages ?? []).slice(0, Number(limit)).map(value => {
           const message = record(value);
           return { ts: message.ts, user: message.user, botId: message.bot_id,
             text: typeof message.text === 'string' ? message.text.slice(0, 12_000) : '', threadTs: message.thread_ts };
@@ -112,8 +118,8 @@ export class SlackService {
     const id = required(raw, 'id', 128);
     const text = raw.action === 'post-message' ? required(raw, 'text', 12_000) : undefined;
     const filename = raw.action === 'upload-file' ? required(raw, 'path', 4096) : undefined;
-    const fingerprint = createHash('sha256').update(JSON.stringify({ action: raw.action, channel: context.channel, threadTs, text, filename })).digest('hex');
-    const operation: Operation = { id, action: raw.action, channel: context.channel, ...(threadTs ? { threadTs } : {}), status: 'running', stage: 'validating' };
+    const fingerprint = createHash('sha256').update(JSON.stringify({ action: raw.action, channel, threadTs, text, filename })).digest('hex');
+    const operation: Operation = { id, action: raw.action, channel, ...(threadTs ? { threadTs } : {}), status: 'running', stage: 'validating' };
     const { store } = this.bridge;
     if (!store.claimSlackOperation(session, id, fingerprint, JSON.stringify(operation))) {
       if (store.slackOperation(session, id)!.fingerprint !== fingerprint) throw new InputError('Operation ID already used with different arguments');
@@ -126,7 +132,7 @@ export class SlackService {
     try {
       if (text !== undefined) {
         save('posting'); attempted = true;
-        const result = await this.client.postMessage({ ...textMessage(text), channel: context.channel,
+        const result = await this.client.postMessage({ ...textMessage(text), channel,
           ...(threadTs ? { thread_ts: threadTs } : {}), unfurl_links: false, unfurl_media: false, parse: 'none' });
         if (!result.ts) throw new Error('Missing Slack timestamp');
         operation.ts = result.ts;
@@ -144,7 +150,7 @@ export class SlackService {
         operation.uploaded = true;
         save('completing-upload');
         this.context(session);
-        const complete = await this.client.completeUpload({ files: [{ id: result.file_id, title: report.name }], channel_id: context.channel,
+        const complete = await this.client.completeUpload({ files: [{ id: result.file_id, title: report.name }], channel_id: channel,
           ...(threadTs ? { thread_ts: threadTs } : {}) });
         if (!complete.files?.some(file => file.id === result.file_id)) throw new Error('Upload completion not confirmed');
         operation.shared = true;

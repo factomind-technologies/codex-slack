@@ -130,12 +130,13 @@ export class Scheduler {
     try {
       this.valid(job);
       this.db.update({ ...run, deliveryState: 'posting' });
-      const root = await this.postRoot(job.channel, `${job.name} — ${new Date(run.started).toLocaleString('en-US', { timeZone: job.timezone })} (${job.timezone})\nScheduled task: ${job.id}\nDirectory: ${job.cwd}\nReply in this thread to continue this run.`);
+      const auditChannel = job.auditChannel ?? job.channel;
+      const root = await this.postRoot(auditChannel, `${job.name} — ${new Date(run.started).toLocaleString('en-US', { timeZone: job.timezone })} (${job.timezone})\nScheduled task: ${job.id}\nDirectory: ${job.cwd}\nReply in this thread to continue this run.`);
       if (!/^\d+\.\d+$/.test(root)) throw new Error('Slack returned no valid message timestamp');
       // Re-read: completion or a disconnect may have changed the run while Slack was responding.
       run = this.db.run(run.id)!;
-      const key = `${job.team}:${job.channel}:${root}`;
-      this.bridge.store.addBinding({ key, channel: job.channel, root, cwd: job.cwd, thread: run.thread });
+      const key = `${job.team}:${auditChannel}:${root}`;
+      this.bridge.store.addBinding({ key, channel: auditChannel, root, cwd: job.cwd, thread: run.thread });
       this.db.update({ ...run, key, deliveryState: 'posted' });
       return true;
     } catch {
@@ -155,7 +156,12 @@ export class Scheduler {
     if (!run || !job?.channel) return undefined;
     this.valid(job);
     const binding = run.key ? this.bridge.store.get(run.key) : undefined;
-    return { team: job.team, channel: job.channel, cwd: job.cwd, user: job.user, root: binding?.root ?? null };
+    const auditChannel = job.auditChannel ?? job.channel;
+    if (binding && (binding.channel !== auditChannel || binding.thread !== thread || !this.bridge.enabled(binding))) {
+      throw new Error('Scheduled audit session binding changed or is disabled');
+    }
+    return { team: job.team, channel: job.channel, cwd: job.cwd, user: job.user, root: binding?.root ?? null,
+      ...(job.auditChannel ? { auditChannel } : {}) };
   }
   private route(cwd: string): [string, { cwd: string }] | undefined {
     return Object.entries(this.bridge.config.channels).filter(([, binding]) => within(binding.cwd, cwd))
@@ -184,6 +190,16 @@ export class Scheduler {
     if (channel && (config.channels[channel]!.cwd !== route?.[1].cwd || !within(config.channels[channel]!.cwd, cwd))) {
       throw new Error('Use a channel bound to the closest directory, or channel: null for local results');
     }
+    let auditChannel: string | undefined;
+    if (raw.auditChannel !== undefined) {
+      if (!channel || typeof raw.auditChannel !== 'string' || !config.channels[raw.auditChannel]) {
+        throw new Error('auditChannel requires a publication channel and a configured Slack channel ID');
+      }
+      auditChannel = raw.auditChannel;
+      if (config.channels[auditChannel]!.cwd !== route?.[1].cwd || !within(config.channels[auditChannel]!.cwd, cwd)) {
+        throw new Error('auditChannel must be bound to the closest project directory');
+      }
+    }
     const timezone = required(raw, 'timezone', 100);
     new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
     const cron = typeof raw.cron === 'string' && raw.cron.trim() ? raw.cron.trim() : null;
@@ -208,6 +224,7 @@ export class Scheduler {
     if (thread && (!target?.thread || !this.bridge.enabled(target) || target.channel !== channel || target.cwd !== cwd)) {
       throw new Error('thread must belong to the selected channel and exact task directory');
     }
+    if (thread && auditChannel !== undefined) throw new Error('auditChannel applies only to new scheduled sessions, not existing-thread follow-ups');
     if (target) thread = target.thread;
     if (thread && (raw.scheduledSandbox !== undefined || raw.scheduledApprovalPolicy !== undefined)) {
       throw new Error('scheduledSandbox and scheduledApprovalPolicy apply to new scheduled sessions; existing-thread follow-ups use interactive permissions');
@@ -245,6 +262,7 @@ export class Scheduler {
       enabled: raw.enabled as boolean ?? previous?.enabled ?? true, nextAt,
       disableOnFailure: raw.disableOnFailure as boolean ?? previous?.disableOnFailure ?? !cron,
       verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
+    if (auditChannel) { job.auditChannel = auditChannel; job.auditChannelCwd = config.channels[auditChannel]!.cwd; }
     if (typeof raw.scheduledBrowserUse === 'boolean') job.scheduledBrowserUse = raw.scheduledBrowserUse;
     if (raw.scheduledSandbox !== undefined) job.scheduledSandbox = raw.scheduledSandbox as Job['scheduledSandbox'];
     if (raw.scheduledApprovalPolicy !== undefined) job.scheduledApprovalPolicy = raw.scheduledApprovalPolicy as Job['scheduledApprovalPolicy'];
@@ -252,7 +270,7 @@ export class Scheduler {
     if (codexPermissions) job.codexPermissions = codexPermissions;
     if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
     else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
-    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse', 'scheduledSandbox', 'scheduledApprovalPolicy', 'codexPermissions']
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'auditChannel', 'auditChannelCwd', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse', 'scheduledSandbox', 'scheduledApprovalPolicy', 'codexPermissions']
       .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
     job.revision = sameDefinition ? previous.revision : randomUUID();
     if (sameDefinition) {
@@ -269,6 +287,10 @@ export class Scheduler {
     if (allowedDirectory(config.root, job.cwd) !== job.cwd) throw new Error('The project directory changed');
     if (job.channel && (config.channels[job.channel]?.cwd !== job.channelCwd || this.route(job.cwd)?.[1].cwd !== job.channelCwd)) {
       throw new Error('The project channel binding changed; update this schedule to select its destination again');
+    }
+    if (job.auditChannel && (!job.channel || config.channels[job.auditChannel]?.cwd !== job.auditChannelCwd
+      || this.route(job.cwd)?.[1].cwd !== job.auditChannelCwd)) {
+      throw new Error('The audit channel binding changed; update this schedule to select its destination again');
     }
     if (job.thread) {
       const target = this.bridge.store.byThread(job.thread);

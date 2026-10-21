@@ -28,6 +28,9 @@ Task JSON: {"id":"weekly-log-check","name":"Weekly log check","cwd":"/project",
 "cron":"0 9 * * 1","timezone":"America/Los_Angeles","prompt":"Check logs..."}
 Use "at":"2026-10-01T09:00:00-07:00" instead of cron for one-shot tasks.
 channel defaults to the closest linked directory; null keeps results local.
+Optional auditChannel sends execution threads, output, questions and approvals to a
+separate configured channel for the same project. channel remains the publication
+channel for destination "channel". Omit auditChannel to keep existing behavior.
 verbosity defaults to quiet: no start/progress posts or [SILENT] no-op results.
 Each visible run creates a NEW Slack thread unless thread is explicitly set.
 Use "thread":"current" (CODEX_THREAD_ID), a saved session ID or Slack root timestamp,

@@ -724,3 +724,104 @@ test('real predicates support pending, ready, missing executable, timeout and ca
   const check = checkCondition({ ...condition, args: ['-e', 'setInterval(()=>{},1000)'] }, tmpdir(), controller.signal);
   controller.abort(); assert.equal((await check).error, 'Condition cancelled');
 });
+
+test('auditChannel pins a separate project channel, validates it, and preserves the next occurrence', async t => {
+  const f = fixture(t);
+  f.bridge.config.channels.C999 = { cwd: f.dir };
+  const initial = f.scheduler.put({ ...f.job, channel: 'C123' });
+  const saved = f.scheduler.put({ ...initial, auditChannel: 'C999' });
+  assert.equal(saved.channel, 'C123'); assert.equal(saved.auditChannel, 'C999');
+  assert.equal(saved.auditChannelCwd, f.dir); assert.equal(saved.nextAt, initial.nextAt);
+  assert.notEqual(saved.revision, initial.revision);
+  assert.equal(f.scheduler.put({ ...saved }).revision, saved.revision);
+  for (const auditChannel of [null, false, 'auto', 'C404']) {
+    assert.throws(() => f.scheduler.put({ ...initial, auditChannel }), /auditChannel/);
+  }
+  assert.throws(() => f.scheduler.put({ ...initial, channel: null, auditChannel: 'C999' }), /auditChannel/);
+  const sub = path.join(f.dir, 'other'); mkdirSync(sub);
+  f.bridge.config.channels.C888 = { cwd: sub };
+  assert.throws(() => f.scheduler.put({ ...initial, auditChannel: 'C888' }), /closest project/);
+  const run = await f.scheduler.launch(saved);
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  assert.deepEqual(f.roots.map(r => r.channel), ['C999']);
+  assert.ok(f.outputs.every(output => output.key.startsWith('T123:C999:')));
+  const binding = f.store.get(f.db.run(run.id)!.key!)!;
+  assert.equal(binding.channel, 'C999');
+  assert.throws(() => f.scheduler.put({ ...initial, auditChannel: 'C999', thread: run.thread }), /selected channel|auditChannel/);
+  f.bridge.ingest('T123', { user: 'U123', channel: 'C999', ts: '102.1', thread_ts: binding.root, text: 'Check the audit' });
+  await until(() => f.outputs.some(output => output.text === 'Reply: Check the audit'));
+  assert.equal(f.outputs.find(output => output.text === 'Reply: Check the audit')?.key, binding.key);
+});
+
+test('publication and audit CLI routes remain separate before and after a root and retain operation deduplication', async t => {
+  const f = fixture(t);
+  f.bridge.config.channels.C999 = { cwd: f.dir };
+  const job = f.scheduler.put({ ...f.job, channel: 'C123', auditChannel: 'C999', prompt: 'hold' });
+  const run = await f.scheduler.launch(job);
+  await until(() => f.codex.active.has(run.thread!));
+  const posted: unknown[] = []; const reads: unknown[] = [];
+  const client = {
+    postMessage: async (args: unknown) => { posted.push(args); return { ts: '9.9' }; },
+    getUploadURL: async () => { throw new Error('unused'); },
+    completeUpload: async () => { throw new Error('unused'); },
+    replies: async (args: unknown) => { reads.push(args); return { messages: [] }; },
+  };
+  const service = new SlackService(f.bridge, client, session => f.scheduler.slackContext(session));
+  const command = (args: object) => service.command({ session: run.thread, ...args });
+  let context = record(await command({ action: 'context' }));
+  assert.equal(context.channel, 'C123'); assert.equal(context.auditChannel, 'C999'); assert.equal(context.root, null);
+  const report = { action: 'post-message', id: 'report', destination: 'channel', text: 'Validated report' };
+  const result = await command(report);
+  assert.equal(record(posted[0]).channel, 'C123'); assert.equal(Object.hasOwn(record(posted[0]), 'thread_ts'), false);
+  // The quiet scheduler creates a root only when interaction or completion needs it.
+  f.codex.emit('notification', 'item/completed', { threadId: run.thread,
+    item: { type: 'agentMessage', text: 'Choose an option', questions: [{ id: 'q', question: 'Which?' }] } });
+  await until(() => Boolean(f.db.run(run.id)?.key));
+  assert.equal(f.roots[0]?.channel, 'C999');
+  context = record(await command({ action: 'context' }));
+  assert.equal(context.channel, 'C123'); assert.equal(context.auditChannel, 'C999'); assert.equal(context.root, '101.1');
+  assert.deepEqual(await command(report), result); assert.equal(posted.length, 1);
+  const audit = { action: 'post-message', id: 'audit', destination: 'thread', text: 'Execution audit' };
+  const auditResult = await command(audit);
+  assert.equal(record(posted[1]).channel, 'C999'); assert.equal(record(posted[1]).thread_ts, '101.1');
+  await command({ action: 'thread-replies' });
+  assert.equal(record(reads[0]).channel, 'C999'); assert.equal(record(reads[0]).ts, '101.1');
+  await assert.rejects(command({ ...report, id: 'wrong', channel: 'C999' }), /bound channel/);
+  // Reconstructing the service simulates a daemon restart without replaying external sends.
+  const recovered = new SlackService(f.bridge, client, session => f.scheduler.slackContext(session));
+  assert.deepEqual(await recovered.command({ ...audit, session: run.thread }), auditResult);
+  assert.deepEqual(await recovered.command({ action: 'operation', session: run.thread, id: 'report' }), result);
+  assert.deepEqual(await recovered.command({ action: 'operation', session: run.thread, id: 'audit' }), auditResult);
+  assert.equal(posted.length, 2);
+  // Editing the next occurrence cannot redirect an already saved run.
+  f.scheduler.put({ ...job, auditChannel: 'C123' });
+  assert.equal(record(await command({ action: 'context' })).auditChannel, 'C999');
+  f.bridge.config.channels.C999 = { cwd: path.join(f.dir, 'revoked') };
+  await assert.rejects(command({ ...report, id: 'revoked' }), /audit channel binding changed/);
+  assert.equal(posted.length, 2);
+  f.bridge.config.channels.C999 = { cwd: f.dir };
+  delete f.bridge.config.channels.C123;
+  await assert.rejects(command({ ...report, id: 'report-revoked' }), /project channel binding changed/);
+  assert.equal(posted.length, 2);
+});
+
+test('scheduled approvals and failures use auditChannel and revoked routes fail closed', async t => {
+  const f = fixture(t);
+  f.bridge.config.channels.C999 = { cwd: f.dir };
+  const job = f.scheduler.put({ ...f.job, channel: 'C123', auditChannel: 'C999', prompt: 'browser-approval', scheduledBrowserUse: true });
+  const run = await f.scheduler.launch(job);
+  await until(() => f.outputs.some(output => output.text === 'Codex needs approval.'));
+  assert.equal(f.roots[0]?.channel, 'C999');
+  const approval = f.outputs.find(output => output.text === 'Codex needs approval.')!;
+  assert.ok(approval.key.startsWith('T123:C999:'));
+  const actions = record(approval.blocks?.find(block => block.type === 'actions'));
+  f.bridge.interactions.choose(String(record((actions.elements as unknown[])[0]).value), 'decline');
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const failure = await f.scheduler.launch(f.scheduler.put({ ...job, id: 'failure', prompt: 'fail-silent' }));
+  await until(() => f.db.run(failure.id)?.finished !== null);
+  assert.equal(f.db.run(failure.id)?.status, 'failed');
+  assert.ok(f.roots.every(root => root.channel === 'C999'));
+  delete f.bridge.config.channels.C999;
+  const invalid = await f.scheduler.launch(job);
+  assert.equal(invalid.status, 'failed'); assert.match(invalid.error!, /audit channel binding changed/);
+});

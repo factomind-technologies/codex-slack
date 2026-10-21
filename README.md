@@ -177,8 +177,12 @@ prose into shell commands. A message request looks like:
 ```
 
 `destination: "channel"` omits `thread_ts` and publishes directly to the session's
-bound channel. `destination: "thread"` uses its bound thread root. Destinations
-outside that exact bound channel are rejected. Quiet scheduled sessions can publish
+bound channel. `destination: "thread"` uses its bound thread root. For schedules
+with `auditChannel`, `context.channel` remains the publication channel,
+while `context.auditChannel` is the execution channel. `destination:"thread"` and
+`thread-replies` use the execution channel and its thread root. Top-level publication
+always uses `context.channel`, even after an audit thread exists. Destinations outside
+these action-specific pinned channels are rejected. Quiet scheduled sessions can publish
 to their pinned channel before a Slack root exists; thread delivery requires a root.
 Only an authorized, enabled session can use the interface; restricted automatic
 GitHub triage sessions cannot use it. The interface does not grant publication
@@ -444,6 +448,30 @@ Codex schedules that create a new session use `scheduledSandbox` and `scheduledA
 `never` makes blocked commands fail without requesting shell approval; it does not grant access by itself. Restart the daemon after changing global settings. Per-schedule settings take precedence and are saved with the job; omitting a field inherits the global preference. `put` replaces the full definition. Existing-thread follow-ups use interactive permissions and reject these per-schedule overrides. These settings affect the Codex driver; Claude retains its documented unattended bypass mode.
 
 Set `"verbosity":"verbose"` in the task JSON to include run starts, progress, and no-op answers. `list`/`get` show the setting, and `history` retains every run and final answer even when nothing was posted to Slack. Read `get <id>` and save the complete definition with `put` to change verbosity; this does not run the task or move its next occurrence.
+
+To keep reports out of execution audit conversations, set both destinations:
+
+```json
+{
+  "channel": "C_REPORT",
+  "auditChannel": "C_AUDIT"
+}
+```
+
+`channel` remains the agent's explicit publication destination for
+`post-message`/`upload-file` with `destination:"channel"`. `auditChannel` receives
+scheduled execution roots, progress (when verbose), final answers, failures,
+interruptions, questions, approvals, and human follow-ups in that run's thread.
+The context command exposes both channel IDs; thread posts and history retrieval
+use the audit thread. Quiet mode still suppresses routine progress and exact no-ops.
+
+Both destinations must be configured channels bound to the closest project
+directory. They are pinned in the saved definition and each run's snapshot and
+revalidated on use. Changing a later schedule cannot redirect an existing run.
+An absent `auditChannel` preserves the original single-channel behavior; it is
+not supported with `channel:null` or existing-thread follow-ups. Saving this setting
+does not start a run or move the next occurrence. Report publication still requires
+explicit user authorization; an audit channel does not enable arbitrary cross-posting.
 
 The saved prompt defines the user's authorized task; scheduling does not override Codex's permissions or project instructions.
 

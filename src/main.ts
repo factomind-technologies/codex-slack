@@ -101,7 +101,10 @@ You are already connected to Slack through this bridge. Ordinary responses are t
 For user-requested top-level messages, Markdown attachments, or omitted thread history,
 use the daemon-owned command (no separate Slack plugin or bot token is needed):
 node ${quote(messageCli)} --session ${quote(session)} --state-dir ${quote(config.stateDir)} --help
-Run context first. Use post-message or upload-file with --file JSON and destination channel
+Run context first: channel is the publication destination; auditChannel, when present,
+is the execution thread's channel. Destination thread and thread-replies use that audit
+thread; destination channel always publishes to channel.
+Use post-message or upload-file with --file JSON and destination channel
 only when the user requested publication. Use a stable operation id; inspect uncertain
 outcomes with operation before any new send. Upload roots are reported by context.
 Thread-replies returns bounded pages and reports actual Slack API permission limitations.`;

@@ -20,7 +20,9 @@ operation <id>                   Inspect a saved send/upload, including partial 
 
 post-message JSON: {"id":"summary-2026-10-14","destination":"channel","text":"..."}
 upload-file JSON: {"id":"report-2026-10-14","destination":"channel","path":"/reports/day.md"}
-Use destination "thread" for the session's original thread. No arbitrary channel IDs.
+Use destination "channel" for context.channel (publication), and "thread" for the
+original execution thread in context.auditChannel when present. Thread-replies also
+uses that execution channel. No arbitrary channel IDs.
 thread-replies JSON: {"root":"123.456","limit":15,"cursor":"..."}; use nextCursor
 for another page. Permission errors are distinct from an empty messages array.
 --file - reads JSON from stdin. Supply a stable unique id for each intended write.
