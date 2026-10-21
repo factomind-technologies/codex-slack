@@ -15,7 +15,7 @@ No routing model, terminal scraping, private SDK imports, or edits to Codex's se
 - Node **24.14+** (uses built-in SQLite and TypeScript transformation for tests).
 - Either Codex CLI (protocol baseline **0.154.0**) or Claude Code CLI installed and logged in on this machine.
 - A Slack workspace where you can install a custom app.
-- An always-on machine for the daemon. Linux/systemd is the documented deployment.
+- An always-on machine for the daemon. This installation uses PM2; see [RUNBOOK.md](RUNBOOK.md). Alternative Linux/systemd instructions are retained below.
 
 ## Setup
 
@@ -521,7 +521,23 @@ Version 0.1 is intentionally narrow:
 - Outputs are forwarded when each assistant message completes, not token by token. Replies use Slack's native Markdown blocks for headings, emphasis, links, lists, tables, and fenced code blocks. The original text is retained for notifications and accessibility.
 - No scheduled database pruning. Remove or archive the private state directory only when you no longer need its bindings and delivery history.
 
-## Linux service
+## Local operation: PM2
+
+This installation is managed by PM2 as `hft-apprentice`. See [RUNBOOK.md](RUNBOOK.md)
+for local deployment, shutdown, startup, and recovery checks. The restart command is:
+
+```sh
+pm2 restart hft-apprentice
+```
+
+Use `pm2 stop hft-apprentice` to turn it off and `pm2 start hft-apprentice` to start
+the existing application again. Preserve PM2 process ownership; do not kill the PID
+and launch a detached or byobu replacement. A documentation change does not require
+a restart. The systemd helper below is for alternative installations only.
+
+## Alternative deployment: Linux/systemd
+
+These instructions do not apply to the local PM2-managed `hft-apprentice` application.
 
 Copy [`contrib/codex-slack.service`](contrib/codex-slack.service) to `~/.config/systemd/user/codex-slack.service`. Edit the checkout path, Node executable, and PATH. For nvm installations, use the absolute Node executable and set `codexBin` explicitly in config. Then:
 
@@ -533,7 +549,7 @@ journalctl --user -u codex-slack -f
 
 The service restarts on crashes and stops its whole process group on shutdown. User services normally require a logged-in user; use your system's lingering configuration if you want it to run after logout. Stop the foreground instance before starting the service.
 
-### Restarting from inside a Codex Slack session
+### Systemd only: restarting from inside a Codex Slack session
 
 The session's command executor is a descendant of the bridge service. A direct
 `systemctl --user restart codex-slack.service` kills that executor before it returns,

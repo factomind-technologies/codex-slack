@@ -1,6 +1,6 @@
 # Operating the Slack bridge
 
-Read README.md before changing daemon lifecycle or session delivery.
+Read README.md and RUNBOOK.md before changing daemon lifecycle or session delivery.
 
 ## Complete changes before deploying locally
 
@@ -16,35 +16,30 @@ Run the new code locally for several hours and verify stability before consideri
 publication; elapsed time alone never authorizes it. Push only when explicitly
 requested after that observation period.
 
-The restart helper enforces a clean, committed local main checkout without contacting
+Normal restarts require a clean, committed local main checkout without contacting
 a remote. Report the local commit and live verification separately. Do not describe
 a local deployment as pushed or published.
 
-## Restarting from a Slack-linked Codex session
+## Process management and restarts
 
-This chat's Codex app-server and shell tools can be children of `codex-slack.service`.
-`systemctl --user restart codex-slack.service` kills the command executor as well as
-the bridge. A tool result of `aborted` is therefore ambiguous: the restart may have
-succeeded. It is not evidence of an approval rejection. Do not repeatedly restart.
-
-After building and testing an authorized change, use:
+This installation is managed by **PM2**, under the existing application name
+`hft-apprentice`. Follow [RUNBOOK.md](RUNBOOK.md). For an authorized restart, use:
 
 ```sh
-node /home/erik/work/projects/codex-slack/bin/codex-slack-restart.mjs
+pm2 restart hft-apprentice
 ```
 
-The helper uses `CODEX_THREAD_ID` (or `--session <id>`), saves a durable handoff,
-and schedules an independent systemd restart. New daemon startup sends a readiness
-notice into the original Codex session through the bridge inbox. It does not replay
-the interrupted task. Use the normal execution escalation mechanism if the sandbox
-blocks systemd or the private control socket; prior user restart authorization is enough.
+Preserve PM2 ownership of the process. Do not kill the bridge PID directly, launch a
+replacement with nohup/spawn/detach or from byobu, create another PM2 application, or
+switch it to systemd. The bundled `codex-slack-restart.mjs` helper uses systemd and
+is not the restart command for this installation.
 
-If the result is interrupted or uncertain, inspect instead of repeating the mutation:
+To stop or start the existing application, use `pm2 stop hft-apprentice` or
+`pm2 start hft-apprentice`, respectively. A documentation change alone does not
+require a restart. If PM2 cannot find the application, report the problem rather
+than launching an unmanaged replacement.
 
-```sh
-node /home/erik/work/projects/codex-slack/bin/codex-slack-restart.mjs status
-systemctl --user show codex-slack.service -p ActiveState -p InvocationID -p ExecMainStartTimestamp
-```
-
-`queued` means the readiness notice entered the durable inbox, not that its model
-reply was delivered. See README.md for failure recovery and the independent log.
+A restart from a Slack-linked session may interrupt that session's tool executor.
+An aborted tool result is ambiguous; inspect `pm2 describe hft-apprentice`, recent
+PM2 logs, and scheduler health before considering another restart. Do not repeat a
+restart or replay interrupted work solely because a reply was lost.
