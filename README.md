@@ -542,11 +542,15 @@ This is not an approval rejection. Inspect service start time and health before 
 
 Build and test the intended changes, then use the session-aware helper:
 
-The persistent daemon runs this checkout. Merge completed branch work into `main`,
-commit and push it before a normal local restart. The helper checks that the tree
-is clean, the branch is `main`, and HEAD matches the actual published `origin/main`
-revision. `--allow-unpublished` permits intentional temporary testing; afterwards,
-merge/push the tested work and restart from published main to finish deployment.
+The persistent daemon runs this checkout. Merge intended branch work into `main`,
+run checks, commit, and verify a clean working tree before a normal local restart.
+The helper checks the local branch, working tree, and commit without contacting a
+remote. An unpublished local commit is sufficient; no push is required.
+
+Do not push Git commits or create pull requests unless explicitly requested by the
+user. A local restart does not authorize either action. Observe the new code running
+for several hours and verify stability before considering publication; a push still
+requires an explicit request after that period.
 
 ```sh
 node bin/codex-slack-restart.mjs

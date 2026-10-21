@@ -4,18 +4,21 @@ Read README.md before changing daemon lifecycle or session delivery.
 
 ## Complete changes before deploying locally
 
-The persistent local daemon runs this checkout. A successful test or local restart
-does not complete branch work. Before a normal restart, merge the intended work
-into `main`, run required checks, commit, push to `origin/main`, and verify a clean
-working tree with local HEAD equal to the published remote main. Inspect unmerged
-local branches for features still used by the daemon before rebuilding from main.
-Do not delete branches containing unmerged work.
+The persistent local daemon runs this checkout. Before a normal restart, merge the
+intended work into `main`, run required checks, commit, and verify a clean working
+tree. A local commit is sufficient; no push or remote-main match is required.
+Inspect unmerged local branches for features still used by the daemon before
+rebuilding from main. Do not delete branches containing unmerged work.
 
-The restart helper enforces clean, published main by default. Use
-`--allow-unpublished` only when temporary branch testing is explicitly intended;
-finish by merging/pushing and restarting the published main checkout. Report the
-commit, push, and live verification separately so temporary deployment cannot be
-mistaken for completed integration.
+Do not create pull requests or push Git commits unless the user explicitly requests
+that action. Restarting or deploying locally does not authorize a push or PR.
+Run the new code locally for several hours and verify stability before considering
+publication; elapsed time alone never authorizes it. Push only when explicitly
+requested after that observation period.
+
+The restart helper enforces a clean, committed local main checkout without contacting
+a remote. Report the local commit and live verification separately. Do not describe
+a local deployment as pushed or published.
 
 ## Restarting from a Slack-linked Codex session
 
